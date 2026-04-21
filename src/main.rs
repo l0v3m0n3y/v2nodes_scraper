@@ -175,12 +175,7 @@ async fn main() {
     
     println!("\n--- TOP 10 FASTEST CONFIGS ---");
     for cfg in configs.iter().take(10) {
-        let config_preview = if cfg.config.len() > 50 {
-            format!("{}...", &cfg.config[..50])
-        } else {
-            cfg.config.clone()
-        };
-        println!("Speed: {} | Config: {}", cfg.speed, config_preview);
+        println!("Speed: {} | Config: {}", cfg.speed, cfg.config.clone());
     }
     
     println!("\nTotal valid configs: {}", configs.len());
