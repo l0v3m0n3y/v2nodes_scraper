@@ -73,8 +73,26 @@ async fn get_servers(
     semaphore: Arc<Semaphore>,
 ) -> Vec<String> {
     let mut tasks = vec![];
-    
-    for page in 1..84 {
+    //Now we check all pages
+    let first_url = format!("https://ru.v2nodes.com/?page=1");
+    let mut total_pages = 1; 
+    if let Some(html) = get_text(client, first_url, semaphore.clone()).await {
+        let document = Html::parse_document(&html);
+        let selector = Selector::parse("ul.pagination li.page-item:last-child a").unwrap();
+        
+        if let Some(element) = document.select(&selector).next() {
+            if let Some(href) = element.value().attr("href") {
+                total_pages = href.chars()
+                    .filter(|c| c.is_digit(10))
+                    .collect::<String>()
+                    .parse::<usize>()
+                    .unwrap_or(1);
+            }    
+        }
+    }
+
+    for page in 1..=total_pages {
+        println!("{}/{}",page,total_pages);
         let url = format!("https://ru.v2nodes.com/?page={}", page);
         tasks.push(get_text(client, url, semaphore.clone()));
     }
