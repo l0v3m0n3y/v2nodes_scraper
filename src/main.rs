@@ -119,9 +119,11 @@ async fn get_servers(
 }
 
 fn parse_speed_to_ms(speed_str: &str) -> Option<u32> {
-    // Remove "ms" suffix and parse the number
-    let num_str = speed_str.trim_end_matches("ms");
-    num_str.parse::<u32>().ok()
+    let cleaned = speed_str
+        .trim_matches('"') // Убираем кавычки, если они остались
+        .trim_end_matches("ms")
+        .trim();
+    cleaned.parse::<u32>().ok()
 }
 
 async fn process_server(
@@ -152,8 +154,9 @@ async fn process_server(
     };
     
     let speed = speed_data
-        .get("response")?
-        .to_string();
+    .get("response")?
+    .as_str()?
+    .to_string();
     
     // Parse the speed string to get numeric value
     let speed_ms = match parse_speed_to_ms(&speed) {
