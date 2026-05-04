@@ -10,10 +10,11 @@ use std::collections::HashMap;
 #[derive(Debug, Clone)]
 struct ServerConfig {
     speed: String,
+    speed_ms: u32,  // Add numeric speed for sorting
     config: String,
 }
 
-async fn get_text(client: &Client, url: String,semaphore: Arc<Semaphore>) -> Option<String> {
+async fn get_text(client: &Client, url: String, semaphore: Arc<Semaphore>) -> Option<String> {
     let _permit = semaphore.acquire().await.unwrap();
     
     let response = client
@@ -92,7 +93,7 @@ async fn get_servers(
     }
 
     for page in 1..=total_pages {
-        println!("{}/{}",page,total_pages);
+        println!("{}/{}", page, total_pages);
         let url = format!("https://ru.v2nodes.com/?page={}", page);
         tasks.push(get_text(client, url, semaphore.clone()));
     }
@@ -115,6 +116,12 @@ async fn get_servers(
     }
     
     servers
+}
+
+fn parse_speed_to_ms(speed_str: &str) -> Option<u32> {
+    // Remove "ms" suffix and parse the number
+    let num_str = speed_str.trim_end_matches("ms");
+    num_str.parse::<u32>().ok()
 }
 
 async fn process_server(
@@ -145,7 +152,14 @@ async fn process_server(
     };
     
     let speed = speed_data
-        .get("response")?.to_string();
+        .get("response")?
+        .to_string();
+    
+    // Parse the speed string to get numeric value
+    let speed_ms = match parse_speed_to_ms(&speed) {
+        Some(ms) => ms,
+        None => return None, // Skip if we can't parse the speed
+    };
     
     let document = Html::parse_document(&html);
     let textarea_selector = Selector::parse("textarea").unwrap();
@@ -157,7 +171,7 @@ async fn process_server(
         .unwrap_or_default();
     
     if !config.is_empty() {
-        Some(ServerConfig { speed, config })
+        Some(ServerConfig { speed, speed_ms, config })
     } else {
         None
     }
@@ -189,11 +203,12 @@ async fn main() {
     
     let mut configs: Vec<ServerConfig> = results.into_iter().flatten().collect();
     
-    configs.sort_by_key(|cfg| cfg.speed.clone());
+    // Now sort by numeric speed (lower is faster)
+    configs.sort_by_key(|cfg| cfg.speed_ms);
     
     println!("\n--- TOP 10 FASTEST CONFIGS ---");
     for cfg in configs.iter().take(10) {
-        println!("Speed: {} | Config: {}", cfg.speed, cfg.config.clone());
+        println!("Speed: \"{}ms\" | Config: {}", cfg.speed, cfg.config);
     }
     
     println!("\nTotal valid configs: {}", configs.len());
