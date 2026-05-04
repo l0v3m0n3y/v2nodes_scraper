@@ -211,7 +211,7 @@ async fn main() {
     
     println!("\n--- TOP 10 FASTEST CONFIGS ---");
     for cfg in configs.iter().take(10) {
-        println!("Speed: \"{}ms\" | Config: {}", cfg.speed, cfg.config);
+        println!("Speed: \"{}\" | Config: {}", cfg.speed, cfg.config);
     }
     
     println!("\nTotal valid configs: {}", configs.len());
