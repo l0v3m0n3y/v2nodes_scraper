@@ -1,6 +1,8 @@
 use reqwest::Client;
 use scraper::{Html, Selector};
 use serde_json::Value;
+use std::fs::File;
+use std::io::{Write, BufWriter};
 use tokio::sync::Semaphore;
 use futures::future::join_all;
 use std::sync::Arc;
@@ -10,7 +12,7 @@ use std::collections::HashMap;
 #[derive(Debug, Clone)]
 struct ServerConfig {
     speed: String,
-    speed_ms: u32,  // Add numeric speed for sorting
+    speed_ms: u32,
     config: String,
 }
 
@@ -74,7 +76,6 @@ async fn get_servers(
     semaphore: Arc<Semaphore>,
 ) -> Vec<String> {
     let mut tasks = vec![];
-    //Now we check all pages
     let first_url = format!("https://ru.v2nodes.com/?page=1");
     let mut total_pages = 1; 
     if let Some(html) = get_text(client, first_url, semaphore.clone()).await {
@@ -158,10 +159,9 @@ async fn process_server(
     .as_str()?
     .to_string();
     
-    // Parse the speed string to get numeric value
     let speed_ms = match parse_speed_to_ms(&speed) {
         Some(ms) => ms,
-        None => return None, // Skip if we can't parse the speed
+        None => return None,
     };
     
     let document = Html::parse_document(&html);
@@ -205,13 +205,19 @@ async fn main() {
     let results = join_all(tasks).await;
     
     let mut configs: Vec<ServerConfig> = results.into_iter().flatten().collect();
-    
-    // Now sort by numeric speed (lower is faster)
+
     configs.sort_by_key(|cfg| cfg.speed_ms);
-    
-    println!("\n--- TOP 10 FASTEST CONFIGS ---");
+
+    let file = File::create("configs.txt").expect("Failed create file");
+
+    let mut writer = BufWriter::new(file);
+
+    println!("\n--- TOP FASTEST CONFIGS ---");
+    //I don't know what the actual speed is. It's checked it using the website method.
     for cfg in configs.iter() {
         println!("Speed: \"{}\" | Config: {}", cfg.speed, cfg.config);
+        //write in the file configs.txt
+        let _ = writeln!(writer,"{}", cfg.config);
     }
     
     println!("\nTotal valid configs: {}", configs.len());
