@@ -210,7 +210,7 @@ async fn main() {
     configs.sort_by_key(|cfg| cfg.speed_ms);
     
     println!("\n--- TOP 10 FASTEST CONFIGS ---");
-    for cfg in configs.iter().take(10) {
+    for cfg in configs.iter() {
         println!("Speed: \"{}\" | Config: {}", cfg.speed, cfg.config);
     }
     
