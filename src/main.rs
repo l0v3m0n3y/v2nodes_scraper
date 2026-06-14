@@ -8,217 +8,110 @@ use futures::future::join_all;
 use std::sync::Arc;
 use std::time::Duration;
 use std::collections::HashMap;
+use regex::Regex;
+use indicatif::{ProgressBar, ProgressStyle};
 
-#[derive(Debug, Clone)]
-struct ServerConfig {
-    speed: String,
-    speed_ms: u32,
-    config: String,
-}
+const BASE_URL: &str = "https://ru.v2nodes.com";
+const MAX_CONCURRENT: usize = 15;
 
 async fn get_text(client: &Client, url: String, semaphore: Arc<Semaphore>) -> Option<String> {
     let _permit = semaphore.acquire().await.unwrap();
-    
-    let response = client
-        .get(url)
-        .header("user-agent", "love_linux_mint")
-        .header("x-requested-with", "XMLHttpRequest")
-        .header("Connection", "keep-alive")
-        .header("host", "ru.v2nodes.com")
-        .timeout(Duration::from_secs(5))
-        .send()
-        .await;
-    
-    match response {
-        Ok(resp) => {
-            if resp.status().is_success() {
-                return resp.text().await.ok();
-            }
-            None
-        }
-        Err(_) => None,
-    }
+    client.get(&url).header("user-agent", "Mozilla/5.0 (Macintosh; PPC Mac OS X 10_12_6 rv:4.0; sr-ME) AppleWebKit/533.21.6 (KHTML, like Gecko) Version/4.0 Safari/533.21.6").timeout(Duration::from_secs(10)).send().await.ok()?.text().await.ok()
 }
 
-async fn post_json(
-    client: &Client,
-    req_id: &str,
-    semaphore: Arc<Semaphore>,
-) -> Option<Value> {
+async fn post_json(client: &Client, req_id: &str, semaphore: Arc<Semaphore>) -> Option<Value> {
     let _permit = semaphore.acquire().await.unwrap();
-    
-    let params = HashMap::from([("id", req_id)]);
-    
-    let response = client
-        .post("https://ru.v2nodes.com/checkServers.json")
-        .form(&params)
-        .header("user-agent", "love_linux_mint")
-        .header("x-requested-with", "XMLHttpRequest")
-        .header("Connection", "keep-alive")
-        .header("host", "ru.v2nodes.com")
-        .timeout(Duration::from_secs(5))
-        .send()
-        .await;
-    
-    match response {
-        Ok(resp) => {
-            if resp.status().is_success() {
-                return resp.json().await.ok();
-            }
-            None
-        }
-        Err(_) => None,
-    }
+    client.post(format!("{}/checkServers.json", BASE_URL)).form(&HashMap::from([("id", req_id)])).header("user-agent", "Mozilla/5.0 (Macintosh; PPC Mac OS X 10_12_6 rv:4.0; sr-ME) AppleWebKit/533.21.6 (KHTML, like Gecko) Version/4.0 Safari/533.21.6").timeout(Duration::from_secs(10)).send().await.ok()?.json().await.ok()
 }
 
-async fn get_servers(
-    client: &Client, 
-    semaphore: Arc<Semaphore>,
-) -> Vec<String> {
-    let mut tasks = vec![];
-    let first_url = format!("https://ru.v2nodes.com/?page=1");
-    let mut total_pages = 1; 
-    if let Some(html) = get_text(client, first_url, semaphore.clone()).await {
-        let document = Html::parse_document(&html);
+async fn get_servers(client: &Client, semaphore: Arc<Semaphore>, pb: &ProgressBar) -> Vec<String> {
+    pb.set_message("Pages...");
+    let html = get_text(client, format!("{}/?page=1", BASE_URL), semaphore.clone()).await;
+    let total_pages = html.and_then(|h| {
+        let doc = Html::parse_document(&h);
         let selector = Selector::parse("ul.pagination li.page-item:last-child a").unwrap();
-        
-        if let Some(element) = document.select(&selector).next() {
-            if let Some(href) = element.value().attr("href") {
-                total_pages = href.chars()
-                    .filter(|c| c.is_digit(10))
-                    .collect::<String>()
-                    .parse::<usize>()
-                    .unwrap_or(1);
-            }    
-        }
-    }
-
+        doc.select(&selector).next().and_then(|el| el.value().attr("href")).and_then(|href| Regex::new(r"page=(\d+)").unwrap().captures(href)).and_then(|caps| caps[1].parse::<usize>().ok())
+    }).unwrap_or(1);
+    
+    pb.set_length(total_pages as u64);
+    let mut tasks = vec![];
     for page in 1..=total_pages {
-        println!("{}/{}", page, total_pages);
-        let url = format!("https://ru.v2nodes.com/?page={}", page);
-        tasks.push(get_text(client, url, semaphore.clone()));
+        tasks.push(get_text(client, format!("{}/?page={}", BASE_URL, page), semaphore.clone()));
     }
     
-    let pages_content = join_all(tasks).await;
     let mut servers = Vec::new();
-    
-    let link_selector = Selector::parse("a.text-decoration-none").unwrap();
-    
-    for content in pages_content {
+    let selector = Selector::parse("a.text-decoration-none").unwrap();
+    for (_i, content) in join_all(tasks).await.iter().enumerate() {
         if let Some(html) = content {
-            let document = Html::parse_document(&html);
-            
-            for element in document.select(&link_selector) {
-                if let Some(href) = element.value().attr("href") {
-                    servers.push(href.to_string());
+            let doc = Html::parse_document(html);
+            for el in doc.select(&selector) {
+                if let Some(href) = el.value().attr("href") {
+                    if href.contains("/servers/") { servers.push(href.to_string()); }
                 }
             }
         }
+        pb.inc(1);
     }
-    
-    servers
+    servers.sort(); servers.dedup(); servers
 }
 
-fn parse_speed_to_ms(speed_str: &str) -> Option<u32> {
-    let cleaned = speed_str
-        .trim_matches('"') // Убираем кавычки, если они остались
+async fn process_server(client: &Client, server: &str, semaphore: Arc<Semaphore>) -> Option<String> {
+    let req_id = server.split("servers/").nth(1)?.split('/').next()?;
+    
+    let (html_result, data_result) = tokio::join!(
+        get_text(client, format!("{}{}", BASE_URL, server), semaphore.clone()),
+        post_json(client, req_id, semaphore.clone())
+    );
+    
+    let html = html_result?;
+    let data = data_result?;
+    let speed_value = data.get("response")?;
+    let speed_str = speed_value.as_str()?;
+    
+    let _speed_ms = speed_str
+        .trim_matches('"')
         .trim_end_matches("ms")
-        .trim();
-    cleaned.parse::<u32>().ok()
-}
-
-async fn process_server(
-    client: &Client,
-    server: &str,
-    semaphore: Arc<Semaphore>,
-) -> Option<ServerConfig> {
-    let url = format!("https://ru.v2nodes.com{}", server);
+        .trim()
+        .parse::<u32>()
+        .ok()?;
     
-    let req_id = server
-        .split("servers/")
-        .nth(1)
-        .and_then(|s| s.split('/').next());
-    
-    let req_id = match req_id {
-        Some(id) => id,
-        None => return None,
-    };
-    
-    let html = match get_text(client, url, semaphore.clone()).await {
-        Some(h) => h,
-        None => return None,
-    };
-    
-    let speed_data = match post_json(client, req_id, semaphore.clone()).await {
-        Some(data) => data,
-        None => return None,
-    };
-    
-    let speed = speed_data
-    .get("response")?
-    .as_str()?
-    .to_string();
-    
-    let speed_ms = match parse_speed_to_ms(&speed) {
-        Some(ms) => ms,
-        None => return None,
-    };
-    
-    let document = Html::parse_document(&html);
+    let doc = Html::parse_document(&html);
     let textarea_selector = Selector::parse("textarea").unwrap();
+    let config = doc.select(&textarea_selector).next()?.inner_html();
     
-    let config = document
-        .select(&textarea_selector)
-        .next()
-        .map(|el| el.inner_html())
-        .unwrap_or_default();
-    
-    if !config.is_empty() {
-        Some(ServerConfig { speed, speed_ms, config })
-    } else {
-        None
+    if config.is_empty() {
+        return None;
     }
+    
+    
+    Some(config)
 }
 
 #[tokio::main]
 async fn main() {
-    let max_concurrent = 10;
-    let semaphore = Arc::new(Semaphore::new(max_concurrent));
+    let pb = ProgressBar::new(100);
+    pb.set_style(ProgressStyle::default_bar().template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} - {msg}").unwrap().progress_chars("#>-"));
     
-    let client = Client::builder()
-        .timeout(Duration::from_secs(5))
-        .build()
-        .expect("Failed to create HTTP client");
+    let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT));
+    let client = Client::new();
     
-    println!("Fetching server list...");
-    let servers = get_servers(&client, semaphore.clone()).await;
-    println!("Found {} servers", servers.len());
+    pb.set_message("Getting servers...");
+    let servers = get_servers(&client, semaphore.clone(), &pb).await;
     
-    println!("Testing server speeds...");
+    pb.set_length(servers.len() as u64);
+    pb.set_position(0);
+    pb.set_message("Testing...");
+    
     let mut tasks = vec![];
+    for server in &servers { tasks.push(process_server(&client, server, semaphore.clone())); }
     
-    for server in &servers {
-        let task = process_server(&client, server, semaphore.clone());
-        tasks.push(task);
+    let configs: Vec<String> = join_all(tasks).await.into_iter().flatten().collect();
+    pb.finish_with_message("Done!");
+    
+    if !configs.is_empty() {
+        let mut file = BufWriter::new(File::create("configs.txt").unwrap());
+        for cfg in &configs { let _ = writeln!(file, "{}", cfg); }
     }
     
-    let results = join_all(tasks).await;
-    
-    let mut configs: Vec<ServerConfig> = results.into_iter().flatten().collect();
-
-    configs.sort_by_key(|cfg| cfg.speed_ms);
-
-    let file = File::create("configs.txt").expect("Failed create file");
-
-    let mut writer = BufWriter::new(file);
-
-    println!("\n--- TOP FASTEST CONFIGS ---");
-    //I don't know what the actual speed is. It's checked it using the website method.
-    for cfg in configs.iter() {
-        println!("Speed: \"{}\" | Config: {}", cfg.speed, cfg.config);
-        //write in the file configs.txt
-        let _ = writeln!(writer,"{}", cfg.config);
-    }
-    
-    println!("\nTotal valid configs: {}", configs.len());
+    println!("✅ Saved {} configs", configs.len());
 }
