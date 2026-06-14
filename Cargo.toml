@@ -1,11 +1,13 @@
 [package]
-name = "v2nodes_scraper"
+name = "v2nodes-scraper"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
 reqwest = { version = "0.11", features = ["json"] }
-tokio = { version = "1", features = ["full"] }
 scraper = "0.18"
-serde_json = "1.0"
+tokio = { version = "1", features = ["full"] }
 futures = "0.3"
+serde_json = "1.0"
+regex = "1.10"
+indicatif = "0.17"
